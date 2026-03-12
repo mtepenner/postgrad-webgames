@@ -191,8 +191,8 @@ window.onload = function() {
     function init() {
         // 1. Scene Setup
         scene = new THREE.Scene();
-        scene.background = new THREE.Color(0x1a1511); // Dark brownish background
-        scene.fog = new THREE.Fog(0x1a1511, 20, 200); // Gritty fog
+        scene.background = new THREE.Color(0x101018); // Dark night sky
+        scene.fog = new THREE.Fog(0x101018, 20, 300); // Dark city fog
 
         // 2. Camera & Lighting
         camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 1, 1000);
@@ -296,59 +296,132 @@ window.onload = function() {
             return tex;
         }
 
-        textures.floor = generateNoiseTex(128, 128, [60, 50, 40], 30);
-        textures.floor.repeat.set(50, 50);
+        // Road Texture
+        const roadCanvas = document.createElement('canvas');
+        roadCanvas.width = 256; roadCanvas.height = 256;
+        const rctx = roadCanvas.getContext('2d');
+        rctx.fillStyle = '#222'; rctx.fillRect(0,0,256,256);
+        for(let i=0; i<5000; i++) {
+            rctx.fillStyle = Math.random() > 0.5 ? '#333' : '#111';
+            rctx.fillRect(Math.random()*256, Math.random()*256, 2, 2);
+        }
+        rctx.fillStyle = '#da0'; // Lane lines
+        rctx.fillRect(120, 0, 16, 100);
+        rctx.fillRect(120, 156, 16, 100);
+        textures.road = new THREE.CanvasTexture(roadCanvas);
+        textures.road.wrapS = textures.road.wrapT = THREE.RepeatWrapping;
+        textures.road.repeat.set(20, 20);
+        textures.road.magFilter = THREE.NearestFilter;
         
-        textures.wall = generateNoiseTex(128, 128, [90, 80, 70], 40);
-        textures.wall.repeat.set(2, 2);
+        // Building Windows Texture
+        const bCanvas = document.createElement('canvas');
+        bCanvas.width = 256; bCanvas.height = 256;
+        const bctx = bCanvas.getContext('2d');
+        bctx.fillStyle = '#1a1a1a'; bctx.fillRect(0,0,256,256);
+        for(let x=10; x<256; x+=30) {
+            for(let y=10; y<256; y+=40) {
+                bctx.fillStyle = Math.random() > 0.8 ? '#aaaa55' : '#050505'; // Lit or unlit windows
+                bctx.fillRect(x, y, 15, 25);
+            }
+        }
+        textures.building = new THREE.CanvasTexture(bCanvas);
+        textures.building.wrapS = textures.building.wrapT = THREE.RepeatWrapping;
+        textures.building.repeat.set(4, 4);
+        textures.building.magFilter = THREE.NearestFilter;
 
-        textures.enemy = generateNoiseTex(64, 64, [150, 30, 30], 50);
+        // Zombie Skin (Pale with blood)
+        const zSkin = document.createElement('canvas');
+        zSkin.width = 64; zSkin.height = 64;
+        const zctx = zSkin.getContext('2d');
+        zctx.fillStyle = '#8b9385'; zctx.fillRect(0,0,64,64);
+        for(let i=0; i<30; i++) {
+            zctx.fillStyle = 'rgba(120, 10, 10, 0.7)';
+            zctx.beginPath(); zctx.arc(Math.random()*64, Math.random()*64, Math.random()*5, 0, Math.PI*2); zctx.fill();
+        }
+        textures.zSkin = new THREE.CanvasTexture(zSkin);
+        textures.zSkin.magFilter = THREE.NearestFilter;
+
+        // Zombie Shirt (White/Dirty with heavy blood)
+        const zShirt = document.createElement('canvas');
+        zShirt.width = 64; zShirt.height = 64;
+        const sctx = zShirt.getContext('2d');
+        sctx.fillStyle = '#c8c8c0'; sctx.fillRect(0,0,64,64); 
+        for(let i=0; i<50; i++) {
+            sctx.fillStyle = 'rgba(130, 0, 0, 0.85)';
+            sctx.fillRect(Math.random()*64, Math.random()*64, Math.random()*20, Math.random()*20);
+        }
+        textures.zShirt = new THREE.CanvasTexture(zShirt);
+        textures.zShirt.magFilter = THREE.NearestFilter;
+        
+        // Zombie Pants (Dark brown with dirt)
+        const zPants = document.createElement('canvas');
+        zPants.width = 64; zPants.height = 64;
+        const pctx = zPants.getContext('2d');
+        pctx.fillStyle = '#3a3028'; pctx.fillRect(0,0,64,64);
+        for(let i=0; i<40; i++) {
+            pctx.fillStyle = 'rgba(20, 20, 20, 0.5)';
+            pctx.fillRect(Math.random()*64, Math.random()*64, Math.random()*10, Math.random()*10);
+        }
+        textures.zPants = new THREE.CanvasTexture(zPants);
+        textures.zPants.magFilter = THREE.NearestFilter;
     }
 
     // --- Environment Builder ---
     function buildArena() {
-        // Floor
-        const floorGeo = new THREE.PlaneGeometry(500, 500);
-        const floorMat = new THREE.MeshLambertMaterial({ map: textures.floor });
+        // City Floor
+        const floorGeo = new THREE.PlaneGeometry(1000, 1000);
+        const floorMat = new THREE.MeshLambertMaterial({ map: textures.road });
         const floor = new THREE.Mesh(floorGeo, floorMat);
         floor.rotation.x = -Math.PI / 2;
         scene.add(floor);
-        
-        // Let's create a bounding box for the floor to prevent falling forever
-        // Actually, we'll just constrain X/Z in the movement logic.
 
-        const wallMat = new THREE.MeshLambertMaterial({ map: textures.wall });
-        const boxGeo = new THREE.BoxGeometry(20, 40, 20);
+        const buildMat = new THREE.MeshLambertMaterial({ map: textures.building });
+        const perimeterMat = new THREE.MeshLambertMaterial({ color: 0x0a0a0a });
 
-        // Generate perimeter walls and random pillars
+        // Generate City Blocks
+        const blockSize = 80;
+        const roadWidth = 40;
+        const step = blockSize + roadWidth;
+
+        for (let x = -400; x <= 400; x += step) {
+            for (let z = -400; z <= 400; z += step) {
+                // Keep the central intersection clear for spawn
+                if (Math.abs(x) < 100 && Math.abs(z) < 100) continue; 
+                
+                // Building
+                let height = 60 + Math.random() * 140;
+                const buildingGeo = new THREE.BoxGeometry(blockSize, height, blockSize);
+                const building = new THREE.Mesh(buildingGeo, buildMat);
+                building.position.set(x, height / 2, z);
+                scene.add(building);
+                objects.push(building);
+
+                // Add some rubble around buildings
+                if (Math.random() < 0.4) {
+                    const rubbleGeo = new THREE.BoxGeometry(10+Math.random()*20, 10+Math.random()*15, 10+Math.random()*20);
+                    const rubbleMat = new THREE.MeshLambertMaterial({ color: 0x333333 });
+                    const rubble = new THREE.Mesh(rubbleGeo, rubbleMat);
+                    rubble.position.set(x + (Math.random()-0.5)*blockSize, 5, z + (Math.random()-0.5)*blockSize);
+                    rubble.rotation.set(Math.random(), Math.random(), Math.random());
+                    scene.add(rubble);
+                    objects.push(rubble);
+                }
+            }
+        }
+
+        // Enclosing Walls
         const createWall = (x, z, w, d) => {
-            const geo = new THREE.BoxGeometry(w, 40, d);
-            const mesh = new THREE.Mesh(geo, wallMat);
-            mesh.position.set(x, 20, z);
+            const geo = new THREE.BoxGeometry(w, 200, d);
+            const mesh = new THREE.Mesh(geo, perimeterMat);
+            mesh.position.set(x, 100, z);
             scene.add(mesh);
             objects.push(mesh);
         };
 
-        // Perimeter
-        createWall(0, -250, 500, 10); // North
-        createWall(0, 250, 500, 10);  // South
-        createWall(-250, 0, 10, 500); // West
-        createWall(250, 0, 10, 500);  // East
-
-        // Random Pillars
-        for (let i = 0; i < 30; i++) {
-            let px = (Math.random() - 0.5) * 400;
-            let pz = (Math.random() - 0.5) * 400;
-            // Keep center clear for spawn
-            if (Math.abs(px) < 40 && Math.abs(pz) < 40) continue; 
-            
-            let height = 10 + Math.random() * 30; // 10 to 40 units tall
-            const pillarGeo = new THREE.BoxGeometry(20, height, 20);
-            const pillar = new THREE.Mesh(pillarGeo, wallMat);
-            pillar.position.set(px, height / 2, pz);
-            scene.add(pillar);
-            objects.push(pillar);
-        }
+        createWall(0, -500, 1000, 20); // North
+        createWall(0, 500, 1000, 20);  // South
+        createWall(-500, 0, 20, 1000); // West
+        createWall(500, 0, 20, 1000);  // East
     }
 
     // --- Weapon System ---
@@ -441,17 +514,26 @@ window.onload = function() {
         // Raycast from center of screen
         raycaster.setFromCamera(new THREE.Vector2(0, 0), camera);
 
-        // Check against enemies and walls
-        const intersects = raycaster.intersectObjects([...enemies, ...objects]);
+        // Check against enemies and walls (true for recursive checking of children)
+        const intersects = raycaster.intersectObjects([...enemies, ...objects], true);
 
         if (intersects.length > 0) {
             const hit = intersects[0];
             
-            // Spawn hit particle
-            createParticleBurst(hit.point, hit.face.normal, hit.object.isEnemy ? 0xff0000 : 0xffffaa);
+            let target = hit.object;
+            let isEnemyHit = false;
+            let rootEnemy = null;
 
-            if (hit.object.isEnemy) {
-                damageEnemy(hit.object);
+            if (target.userData && target.userData.isEnemyPart) {
+                isEnemyHit = true;
+                rootEnemy = target.userData.root;
+            }
+
+            // Spawn hit particle (Red blood vs Gray debris)
+            createParticleBurst(hit.point, hit.face.normal, isEnemyHit ? 0xaa0000 : 0x555555);
+
+            if (isEnemyHit && rootEnemy) {
+                damageEnemy(rootEnemy);
             }
         }
     }
@@ -480,25 +562,99 @@ window.onload = function() {
     }
 
     function spawnEnemy() {
-        // Retro flying cube enemy
-        const enemyGeo = new THREE.BoxGeometry(8, 8, 8);
-        const enemyMat = new THREE.MeshLambertMaterial({ map: textures.enemy });
-        const enemy = new THREE.Mesh(enemyGeo, enemyMat);
+        const enemyGroup = new THREE.Group();
+        enemyGroup.isEnemy = true;
+        enemyGroup.health = config.enemyHealthBase;
+        enemyGroup.id = Math.random() * 1000;
+        enemyGroup.walkCycle = Math.random() * Math.PI * 2; // Random start phase
+        enemyGroup.lastAttackTime = 0; // Initialize cooldown
+
+        // Materials are created per-enemy so flashing one doesn't flash all
+        const skinMat = new THREE.MeshLambertMaterial({ map: textures.zSkin });
+        const shirtMat = new THREE.MeshLambertMaterial({ map: textures.zShirt });
+        const pantsMat = new THREE.MeshLambertMaterial({ map: textures.zPants });
+        const darkMat = new THREE.MeshLambertMaterial({ color: 0x111111 });
+
+        // Head Group (Head + Eyes + Mouth)
+        const headGroup = new THREE.Group();
+        headGroup.position.set(0, 14, 0);
+        const headMesh = new THREE.Mesh(new THREE.BoxGeometry(4, 4.5, 4), skinMat);
+        const leftEye = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.8, 0.2), darkMat);
+        leftEye.position.set(-1, 0.5, 2.05);
+        const rightEye = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.8, 0.2), darkMat);
+        rightEye.position.set(1, 0.5, 2.05);
+        const mouth = new THREE.Mesh(new THREE.BoxGeometry(2, 1.2, 0.2), darkMat);
+        mouth.position.set(0, -1, 2.05);
+        headGroup.add(headMesh, leftEye, rightEye, mouth);
         
+        // Torso
+        const torso = new THREE.Mesh(new THREE.BoxGeometry(6, 8, 3.5), shirtMat);
+        torso.position.set(0, 8, 0);
+
+        // Arms (Pivots at shoulder, with torn sleeves)
+        const leftArmPivot = new THREE.Group();
+        leftArmPivot.position.set(-4, 11, 0);
+        const leftSleeve = new THREE.Mesh(new THREE.BoxGeometry(2.5, 3.5, 2.5), shirtMat);
+        leftSleeve.position.set(0, -1, 0);
+        const leftArm = new THREE.Mesh(new THREE.BoxGeometry(2, 8, 2), skinMat);
+        leftArm.position.set(0, -3.5, 0);
+        leftArmPivot.add(leftSleeve, leftArm);
+        leftArmPivot.rotation.x = Math.PI / 2.5; // Raised forward
+        
+        const rightArmPivot = new THREE.Group();
+        rightArmPivot.position.set(4, 11, 0);
+        const rightSleeve = new THREE.Mesh(new THREE.BoxGeometry(2.5, 3.5, 2.5), shirtMat);
+        rightSleeve.position.set(0, -1, 0);
+        const rightArm = new THREE.Mesh(new THREE.BoxGeometry(2, 8, 2), skinMat);
+        rightArm.position.set(0, -3.5, 0);
+        rightArmPivot.add(rightSleeve, rightArm);
+        rightArmPivot.rotation.x = Math.PI / 2.2; // Slightly offset
+
+        // Legs (Pivots at hip, torn pants showing knee)
+        const leftLegPivot = new THREE.Group();
+        leftLegPivot.position.set(-1.8, 8, 0);
+        const leftLeg = new THREE.Mesh(new THREE.BoxGeometry(2.6, 8, 2.6), pantsMat);
+        leftLeg.position.set(0, -4, 0);
+        const leftKnee = new THREE.Mesh(new THREE.BoxGeometry(2.7, 2, 2.7), skinMat);
+        leftKnee.position.set(0, -4, 0.5); // Protrude slightly as exposed knee
+        leftLegPivot.add(leftLeg, leftKnee);
+
+        const rightLegPivot = new THREE.Group();
+        rightLegPivot.position.set(1.8, 8, 0);
+        const rightLeg = new THREE.Mesh(new THREE.BoxGeometry(2.6, 8, 2.6), pantsMat);
+        rightLeg.position.set(0, -4, 0);
+        rightLegPivot.add(rightLeg);
+
+        enemyGroup.add(headGroup, torso, leftArmPivot, rightArmPivot, leftLegPivot, rightLegPivot);
+
+        // Attach references for animation
+        enemyGroup.leftLeg = leftLegPivot;
+        enemyGroup.rightLeg = rightLegPivot;
+        enemyGroup.leftArm = leftArmPivot;
+        enemyGroup.rightArm = rightArmPivot;
+
+        // Make raycaster work by recursively tagging meshes
+        enemyGroup.children.forEach(child => {
+            if (child.isMesh) {
+                child.userData = { isEnemyPart: true, root: enemyGroup };
+            } else if (child.type === 'Group') {
+                child.children.forEach(subchild => {
+                    if(subchild.isMesh) subchild.userData = { isEnemyPart: true, root: enemyGroup };
+                });
+            }
+        });
+
         // Spawn randomly but away from player
         let px, pz;
         do {
-            px = (Math.random() - 0.5) * 400;
-            pz = (Math.random() - 0.5) * 400;
-        } while (Math.abs(px - camera.position.x) < 50 && Math.abs(pz - camera.position.z) < 50);
+            px = (Math.random() - 0.5) * 800; // Expanded to fit city
+            pz = (Math.random() - 0.5) * 800;
+        } while (Math.abs(px - camera.position.x) < 80 && Math.abs(pz - camera.position.z) < 80);
 
-        enemy.position.set(px, 15, pz); // Hovering height
-        enemy.isEnemy = true;
-        enemy.health = config.enemyHealthBase;
-        enemy.id = Math.random() * 1000;
+        enemyGroup.position.set(px, 0, pz); // Ground level
         
-        scene.add(enemy);
-        enemies.push(enemy);
+        scene.add(enemyGroup);
+        enemies.push(enemyGroup);
     }
 
     function spawnWave() {
@@ -527,10 +683,26 @@ window.onload = function() {
                 setTimeout(spawnWave, 2000);
             }
         } else {
-            // Flash white when hit
-            enemy.material.emissive.setHex(0xffffff);
+            // Flash all parts when hit
+            enemy.children.forEach(child => {
+                if (child.isMesh && child.material.emissive) child.material.emissive.setHex(0x550000); // Red flash
+                else if (child.type === 'Group') {
+                    child.children.forEach(sub => {
+                        if (sub.isMesh && sub.material.emissive) sub.material.emissive.setHex(0x550000);
+                    });
+                }
+            });
             setTimeout(() => {
-                if(enemy) enemy.material.emissive.setHex(0x000000);
+                if(enemy && scene.children.includes(enemy)) {
+                    enemy.children.forEach(child => {
+                        if (child.isMesh && child.material.emissive) child.material.emissive.setHex(0x000000);
+                        else if (child.type === 'Group') {
+                            child.children.forEach(sub => {
+                                if (sub.isMesh && sub.material.emissive) sub.material.emissive.setHex(0x000000);
+                            });
+                        }
+                    });
+                }
             }, 100);
         }
     }
@@ -724,19 +896,44 @@ window.onload = function() {
             // --- Enemy AI & Logic ---
             const playerPos = camObj.position;
             enemies.forEach(enemy => {
-                // Bobbing animation
-                enemy.position.y = 15 + Math.sin(time * 0.005 + enemy.id) * 2;
-
                 // Look at player (only Y axis rotation to stay upright)
                 const targetPos = new THREE.Vector3(playerPos.x, enemy.position.y, playerPos.z);
                 enemy.lookAt(targetPos);
 
-                // Move towards player
-                const dist = enemy.position.distanceTo(playerPos);
-                if (dist > 15) {
+                // Calculate horizontal distance
+                const dist = enemy.position.distanceTo(targetPos);
+                
+                // 1. Movement Logic (Move if further than 8 units)
+                if (dist > 8) {
                     enemy.translateZ(config.enemySpeed * delta);
-                } else if (dist < 10 && Math.random() < 0.05) { // Attack randomly when close
-                    takeDamage(config.enemyDamage);
+                    
+                    // Zombie walk animation
+                    enemy.walkCycle += config.enemySpeed * delta * 0.15;
+                    enemy.leftLeg.rotation.x = Math.sin(enemy.walkCycle) * 0.6;
+                    enemy.rightLeg.rotation.x = Math.sin(enemy.walkCycle + Math.PI) * 0.6;
+                    
+                    // Zombie arm sway
+                    enemy.leftArm.rotation.z = Math.sin(enemy.walkCycle) * 0.1;
+                    enemy.rightArm.rotation.z = Math.sin(enemy.walkCycle + Math.PI) * 0.1;
+                    
+                    // Limp/bob effect on root y position
+                    enemy.position.y = Math.abs(Math.sin(enemy.walkCycle * 2)) * 1.5;
+                }
+                
+                // 2. Attack Logic (Attack if closer than 12 units - overlaps movement stop to prevent deadzones)
+                if (dist <= 12) {
+                    if (time - enemy.lastAttackTime > 1500) { // 1.5 second reliable cooldown instead of random chance
+                        enemy.lastAttackTime = time;
+                        takeDamage(config.enemyDamage);
+                        
+                        // Lunge animation
+                        enemy.position.addScaledVector(enemy.getWorldDirection(new THREE.Vector3()), 4);
+                        setTimeout(() => {
+                             if(enemy && scene.children.includes(enemy)) {
+                                 enemy.position.addScaledVector(enemy.getWorldDirection(new THREE.Vector3()), -4);
+                             }
+                        }, 150);
+                    }
                 }
             });
 
