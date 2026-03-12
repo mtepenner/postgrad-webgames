@@ -1,0 +1,766 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebArena: Quake-Style FPS</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #000;
+            font-family: 'Courier New', Courier, monospace;
+            user-select: none;
+        }
+        #game-container {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+        }
+        #ui-layer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+        }
+        #crosshair {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            width: 20px;
+            height: 20px;
+            transform: translate(-50%, -50%);
+            pointer-events: none;
+        }
+        #crosshair::before, #crosshair::after {
+            content: '';
+            position: absolute;
+            background-color: rgba(255, 255, 255, 0.8);
+        }
+        #crosshair::before {
+            top: 9px; left: 0; width: 20px; height: 2px;
+        }
+        #crosshair::after {
+            top: 0; left: 9px; width: 2px; height: 20px;
+        }
+        #blocker {
+            position: absolute;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
+            background-color: rgba(0,0,0,0.7);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-direction: column;
+            pointer-events: auto;
+            z-index: 50;
+        }
+        .retro-text {
+            color: #d2b48c; /* Tan/Brownish */
+            text-shadow: 2px 2px 0px #4a3c31;
+            font-weight: bold;
+            text-transform: uppercase;
+        }
+        #damage-overlay {
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background-color: rgba(255, 0, 0, 0);
+            pointer-events: none;
+            transition: background-color 0.1s ease-out;
+            z-index: 10;
+        }
+    </style>
+</head>
+<body>
+
+<div id="game-container"></div>
+
+<div id="damage-overlay"></div>
+
+<div id="ui-layer" class="p-6">
+    <div class="flex justify-between w-full">
+        <div class="retro-text text-3xl" id="score-display">FRAGS: 0</div>
+        <div class="retro-text text-3xl text-red-500" id="wave-display">WAVE: 1</div>
+    </div>
+    
+    <div id="crosshair"></div>
+
+    <div class="flex justify-between w-full items-end">
+        <div class="retro-text text-5xl flex items-center gap-2">
+            <span class="text-red-600">❤</span> <span id="health-display">100</span>
+        </div>
+        <div class="retro-text text-5xl flex items-center gap-2">
+            <span class="text-yellow-500">⚡</span> <span id="ammo-display">50</span>
+        </div>
+    </div>
+</div>
+
+<div id="blocker">
+    <h1 class="retro-text text-7xl mb-4 tracking-widest text-orange-500">WEBARENA</h1>
+    <p class="text-gray-300 text-xl mb-6 font-mono max-w-lg text-center">
+        WASD to move. Mouse to look. Left Click to shoot.<br><br>
+        Survive the endless waves.
+    </p>
+
+    <div class="flex gap-6 mb-8 text-xl font-mono text-white">
+        <label class="cursor-pointer hover:text-green-400"><input type="radio" name="difficulty" value="easy" class="mr-2">Easy</label>
+        <label class="cursor-pointer hover:text-yellow-400"><input type="radio" name="difficulty" value="normal" checked class="mr-2">Normal</label>
+        <label class="cursor-pointer hover:text-red-400"><input type="radio" name="difficulty" value="hard" class="mr-2">Hard</label>
+    </div>
+
+    <button id="start-btn" class="px-8 py-4 bg-orange-700 hover:bg-orange-600 text-white font-bold text-2xl border-4 border-orange-900 rounded transition-colors shadow-[4px_4px_0px_#3a2010]">
+        CLICK TO ENTER ARENA
+    </button>
+</div>
+
+<!-- Three.js and PointerLockControls from CDN -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/PointerLockControls.js"></script>
+
+<script>
+window.onload = function() {
+    // --- Configuration & State ---
+    const config = {
+        playerSpeed: 300.0,
+        jumpForce: 250.0,
+        gravity: 600.0,
+        playerHeight: 10,
+        enemySpeed: 50.0,
+        fireRate: 0.15, // seconds between shots
+        maxHealth: 100,
+        maxAmmo: 100,
+        enemyDamage: 10,
+        enemyHealthBase: 3
+    };
+
+    function applyDifficulty() {
+        const diff = document.querySelector('input[name="difficulty"]:checked').value;
+        if (diff === 'easy') { config.enemySpeed = 30; config.enemyDamage = 5; config.enemyHealthBase = 2; }
+        else if (diff === 'normal') { config.enemySpeed = 50; config.enemyDamage = 10; config.enemyHealthBase = 3; }
+        else if (diff === 'hard') { config.enemySpeed = 80; config.enemyDamage = 20; config.enemyHealthBase = 5; }
+    }
+
+    let state = {
+        health: config.maxHealth,
+        ammo: 50,
+        frags: 0,
+        wave: 1,
+        isGameOver: false,
+        lastFireTime: 0
+    };
+
+    // --- Core Variables ---
+    let camera, scene, renderer, controls;
+    const objects = []; // Collidable geometry (walls, floors)
+    const enemies = [];
+    const particles = [];
+    const textures = {};
+    
+    let raycaster;
+    let moveForward = false, moveBackward = false, moveLeft = false, moveRight = false;
+    let canJump = false;
+    let prevTime = performance.now();
+    let velocity = new THREE.Vector3();
+    let direction = new THREE.Vector3();
+
+    // Weapon internals
+    let weaponPivot, weaponMesh, muzzleFlash;
+    let isFiring = false;
+    let recoilTime = 0;
+
+    // DOM Elements
+    const blocker = document.getElementById('blocker');
+    const startBtn = document.getElementById('start-btn');
+    const damageOverlay = document.getElementById('damage-overlay');
+    const healthDisplay = document.getElementById('health-display');
+    const ammoDisplay = document.getElementById('ammo-display');
+    const scoreDisplay = document.getElementById('score-display');
+    const waveDisplay = document.getElementById('wave-display');
+
+    init();
+    animate();
+
+    function init() {
+        // 1. Scene Setup
+        scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x1a1511); // Dark brownish background
+        scene.fog = new THREE.Fog(0x1a1511, 20, 200); // Gritty fog
+
+        // 2. Camera & Lighting
+        camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 1, 1000);
+        camera.position.y = config.playerHeight;
+
+        const ambientLight = new THREE.AmbientLight(0x404040, 1.5); // Soft white light
+        scene.add(ambientLight);
+
+        const dirLight = new THREE.DirectionalLight(0xffeedd, 0.8);
+        dirLight.position.set(100, 200, 50);
+        scene.add(dirLight);
+
+        // 3. Controls (Pointer Lock)
+        controls = new THREE.PointerLockControls(camera, document.body);
+
+        startBtn.addEventListener('click', () => {
+            applyDifficulty();
+            if(state.isGameOver) resetGame();
+            controls.lock();
+        });
+
+        controls.addEventListener('lock', () => {
+            blocker.style.display = 'none';
+        });
+
+        controls.addEventListener('unlock', () => {
+            if(!state.isGameOver) blocker.style.display = 'flex';
+        });
+
+        scene.add(controls.getObject());
+
+        // 4. Input Handling
+        const onKeyDown = function (event) {
+            switch (event.code) {
+                case 'ArrowUp': case 'KeyW': moveForward = true; break;
+                case 'ArrowLeft': case 'KeyA': moveLeft = true; break;
+                case 'ArrowDown': case 'KeyS': moveBackward = true; break;
+                case 'ArrowRight': case 'KeyD': moveRight = true; break;
+                case 'Space': if (canJump === true) velocity.y += config.jumpForce; canJump = false; break;
+            }
+        };
+
+        const onKeyUp = function (event) {
+            switch (event.code) {
+                case 'ArrowUp': case 'KeyW': moveForward = false; break;
+                case 'ArrowLeft': case 'KeyA': moveLeft = false; break;
+                case 'ArrowDown': case 'KeyS': moveBackward = false; break;
+                case 'ArrowRight': case 'KeyD': moveRight = false; break;
+            }
+        };
+
+        document.addEventListener('keydown', onKeyDown);
+        document.addEventListener('keyup', onKeyUp);
+        
+        // Shooting
+        document.addEventListener('mousedown', (e) => {
+            if (controls.isLocked && e.button === 0) shoot();
+        });
+
+        // 5. Build Environment
+        createMaterials();
+        buildArena();
+        createWeapon();
+
+        // 6. Raycaster
+        raycaster = new THREE.Raycaster();
+
+        // 7. Renderer
+        renderer = new THREE.WebGLRenderer({ antialias: false }); // False for more retro feel
+        renderer.setPixelRatio(window.devicePixelRatio);
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        document.getElementById('game-container').appendChild(renderer.domElement);
+
+        window.addEventListener('resize', onWindowResize);
+        
+        // Initial spawn
+        spawnWave();
+    }
+
+    // --- Procedural Textures ---
+    function createMaterials() {
+        // Generate a noisy canvas texture
+        function generateNoiseTex(w, h, colorBase, variance) {
+            const canvas = document.createElement('canvas');
+            canvas.width = w; canvas.height = h;
+            const ctx = canvas.getContext('2d');
+            const imgData = ctx.createImageData(w, h);
+            
+            for (let i = 0; i < imgData.data.length; i += 4) {
+                let noise = (Math.random() - 0.5) * variance;
+                imgData.data[i] = Math.min(255, Math.max(0, colorBase[0] + noise));     // R
+                imgData.data[i+1] = Math.min(255, Math.max(0, colorBase[1] + noise));   // G
+                imgData.data[i+2] = Math.min(255, Math.max(0, colorBase[2] + noise));   // B
+                imgData.data[i+3] = 255;                                                // A
+            }
+            ctx.putImageData(imgData, 0, 0);
+            const tex = new THREE.CanvasTexture(canvas);
+            tex.wrapS = THREE.RepeatWrapping;
+            tex.wrapT = THREE.RepeatWrapping;
+            tex.magFilter = THREE.NearestFilter; // Pixelated retro look
+            return tex;
+        }
+
+        textures.floor = generateNoiseTex(128, 128, [60, 50, 40], 30);
+        textures.floor.repeat.set(50, 50);
+        
+        textures.wall = generateNoiseTex(128, 128, [90, 80, 70], 40);
+        textures.wall.repeat.set(2, 2);
+
+        textures.enemy = generateNoiseTex(64, 64, [150, 30, 30], 50);
+    }
+
+    // --- Environment Builder ---
+    function buildArena() {
+        // Floor
+        const floorGeo = new THREE.PlaneGeometry(500, 500);
+        const floorMat = new THREE.MeshLambertMaterial({ map: textures.floor });
+        const floor = new THREE.Mesh(floorGeo, floorMat);
+        floor.rotation.x = -Math.PI / 2;
+        scene.add(floor);
+        
+        // Let's create a bounding box for the floor to prevent falling forever
+        // Actually, we'll just constrain X/Z in the movement logic.
+
+        const wallMat = new THREE.MeshLambertMaterial({ map: textures.wall });
+        const boxGeo = new THREE.BoxGeometry(20, 40, 20);
+
+        // Generate perimeter walls and random pillars
+        const createWall = (x, z, w, d) => {
+            const geo = new THREE.BoxGeometry(w, 40, d);
+            const mesh = new THREE.Mesh(geo, wallMat);
+            mesh.position.set(x, 20, z);
+            scene.add(mesh);
+            objects.push(mesh);
+        };
+
+        // Perimeter
+        createWall(0, -250, 500, 10); // North
+        createWall(0, 250, 500, 10);  // South
+        createWall(-250, 0, 10, 500); // West
+        createWall(250, 0, 10, 500);  // East
+
+        // Random Pillars
+        for (let i = 0; i < 30; i++) {
+            let px = (Math.random() - 0.5) * 400;
+            let pz = (Math.random() - 0.5) * 400;
+            // Keep center clear for spawn
+            if (Math.abs(px) < 40 && Math.abs(pz) < 40) continue; 
+            
+            let height = 10 + Math.random() * 30; // 10 to 40 units tall
+            const pillarGeo = new THREE.BoxGeometry(20, height, 20);
+            const pillar = new THREE.Mesh(pillarGeo, wallMat);
+            pillar.position.set(px, height / 2, pz);
+            scene.add(pillar);
+            objects.push(pillar);
+        }
+    }
+
+    // --- Weapon System ---
+    function createWeapon() {
+        weaponPivot = new THREE.Group();
+        weaponPivot.position.set(1.5, -1.5, -3); // Positioned bottom right
+        camera.add(weaponPivot); // Attach to camera
+
+        const metalMat = new THREE.MeshStandardMaterial({ color: 0x222222, metalness: 0.8, roughness: 0.3 });
+        const woodMat = new THREE.MeshStandardMaterial({ color: 0x5c3a21, roughness: 0.8 });
+
+        // Receiver
+        const receiver = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.6, 1.8), metalMat);
+        receiver.position.set(0, 0, -0.5);
+        weaponPivot.add(receiver);
+
+        // Barrel
+        const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 1.5, 8), metalMat);
+        barrel.rotation.x = Math.PI / 2;
+        barrel.position.set(0, 0.1, -2.0);
+        weaponPivot.add(barrel);
+
+        // Gas tube
+        const gasTube = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.04, 0.8, 8), metalMat);
+        gasTube.rotation.x = Math.PI / 2;
+        gasTube.position.set(0, 0.2, -1.5);
+        weaponPivot.add(gasTube);
+
+        // Handguard
+        const handguard = new THREE.Mesh(new THREE.BoxGeometry(0.35, 0.25, 0.8), woodMat);
+        handguard.position.set(0, 0.05, -1.5);
+        weaponPivot.add(handguard);
+
+        // Magazine
+        const magGroup = new THREE.Group();
+        magGroup.position.set(0, -0.4, -0.8);
+        const mag1 = new THREE.Mesh(new THREE.BoxGeometry(0.25, 0.6, 0.4), metalMat);
+        mag1.rotation.x = 0.2;
+        const mag2 = new THREE.Mesh(new THREE.BoxGeometry(0.25, 0.5, 0.4), metalMat);
+        mag2.position.set(0, -0.4, 0.1);
+        mag2.rotation.x = 0.4;
+        magGroup.add(mag1, mag2);
+        weaponPivot.add(magGroup);
+
+        // Grip
+        const grip = new THREE.Mesh(new THREE.BoxGeometry(0.25, 0.5, 0.3), woodMat);
+        grip.position.set(0, -0.4, 0.1);
+        grip.rotation.x = -0.2;
+        weaponPivot.add(grip);
+
+        // Stock
+        const stock = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.5, 1.2), woodMat);
+        stock.position.set(0, -0.1, 0.8);
+        stock.rotation.x = -0.1;
+        weaponPivot.add(stock);
+
+        // Muzzle Flash
+        const flashGeo = new THREE.PlaneGeometry(1.5, 1.5);
+        const flashMat = new THREE.MeshBasicMaterial({ 
+            color: 0xffaa00, 
+            transparent: true, 
+            opacity: 0,
+            side: THREE.DoubleSide,
+            blending: THREE.AdditiveBlending
+        });
+        muzzleFlash = new THREE.Mesh(flashGeo, flashMat);
+        muzzleFlash.position.set(0, 0.1, -3.0);
+        const flash2 = new THREE.Mesh(flashGeo, flashMat);
+        flash2.rotation.y = Math.PI / 2;
+        muzzleFlash.add(flash2);
+        
+        weaponPivot.add(muzzleFlash);
+    }
+
+    // --- Game Logic ---
+    function shoot() {
+        const time = performance.now() / 1000;
+        if (time - state.lastFireTime < config.fireRate || state.ammo <= 0) return;
+
+        state.lastFireTime = time;
+        state.ammo--;
+        updateUI();
+
+        // Recoil effect triggers
+        isFiring = true;
+        recoilTime = 0;
+        muzzleFlash.material.opacity = 1;
+        muzzleFlash.children[0].material.opacity = 1;
+
+        // Raycast from center of screen
+        raycaster.setFromCamera(new THREE.Vector2(0, 0), camera);
+
+        // Check against enemies and walls
+        const intersects = raycaster.intersectObjects([...enemies, ...objects]);
+
+        if (intersects.length > 0) {
+            const hit = intersects[0];
+            
+            // Spawn hit particle
+            createParticleBurst(hit.point, hit.face.normal, hit.object.isEnemy ? 0xff0000 : 0xffffaa);
+
+            if (hit.object.isEnemy) {
+                damageEnemy(hit.object);
+            }
+        }
+    }
+
+    function createParticleBurst(position, normal, colorHex) {
+        const pGeo = new THREE.BoxGeometry(0.5, 0.5, 0.5);
+        const pMat = new THREE.MeshBasicMaterial({ color: colorHex });
+        
+        for(let i=0; i<5; i++) {
+            const particle = new THREE.Mesh(pGeo, pMat);
+            particle.position.copy(position);
+            // Push slightly out along normal to prevent z-fighting with wall
+            particle.position.addScaledVector(normal, 0.1); 
+            
+            // Random velocity roughly outwards
+            particle.velocity = new THREE.Vector3(
+                (Math.random() - 0.5) * 20 + normal.x * 10,
+                (Math.random() - 0.5) * 20 + normal.y * 10,
+                (Math.random() - 0.5) * 20 + normal.z * 10
+            );
+            particle.life = 1.0; // 1 second lifetime
+            
+            scene.add(particle);
+            particles.push(particle);
+        }
+    }
+
+    function spawnEnemy() {
+        // Retro flying cube enemy
+        const enemyGeo = new THREE.BoxGeometry(8, 8, 8);
+        const enemyMat = new THREE.MeshLambertMaterial({ map: textures.enemy });
+        const enemy = new THREE.Mesh(enemyGeo, enemyMat);
+        
+        // Spawn randomly but away from player
+        let px, pz;
+        do {
+            px = (Math.random() - 0.5) * 400;
+            pz = (Math.random() - 0.5) * 400;
+        } while (Math.abs(px - camera.position.x) < 50 && Math.abs(pz - camera.position.z) < 50);
+
+        enemy.position.set(px, 15, pz); // Hovering height
+        enemy.isEnemy = true;
+        enemy.health = config.enemyHealthBase;
+        enemy.id = Math.random() * 1000;
+        
+        scene.add(enemy);
+        enemies.push(enemy);
+    }
+
+    function spawnWave() {
+        const count = 3 + (state.wave * 2);
+        for(let i=0; i<count; i++) {
+            spawnEnemy();
+        }
+        // Give ammo every wave
+        state.ammo = Math.min(config.maxAmmo, state.ammo + 20 + state.wave * 5);
+        state.health = Math.min(config.maxHealth, state.health + 20);
+        updateUI();
+    }
+
+    function damageEnemy(enemy) {
+        enemy.health--;
+        if (enemy.health <= 0) {
+            // Die
+            scene.remove(enemy);
+            enemies.splice(enemies.indexOf(enemy), 1);
+            state.frags++;
+            updateUI();
+
+            // Check wave completion
+            if (enemies.length === 0) {
+                state.wave++;
+                setTimeout(spawnWave, 2000);
+            }
+        } else {
+            // Flash white when hit
+            enemy.material.emissive.setHex(0xffffff);
+            setTimeout(() => {
+                if(enemy) enemy.material.emissive.setHex(0x000000);
+            }, 100);
+        }
+    }
+
+    function takeDamage(amount) {
+        state.health -= amount;
+        damageOverlay.style.backgroundColor = 'rgba(255, 0, 0, 0.4)';
+        setTimeout(() => {
+            damageOverlay.style.backgroundColor = 'rgba(255, 0, 0, 0)';
+        }, 150);
+
+        updateUI();
+
+        if (state.health <= 0) {
+            gameOver();
+        }
+    }
+
+    function gameOver() {
+        state.isGameOver = true;
+        controls.unlock();
+        startBtn.innerText = "RESTART";
+        document.querySelector('#blocker h1').innerText = "YOU DIED";
+        blocker.style.display = 'flex';
+    }
+
+    function resetGame() {
+        state = {
+            health: config.maxHealth,
+            ammo: 50,
+            frags: 0,
+            wave: 1,
+            isGameOver: false,
+            lastFireTime: 0
+        };
+        
+        // Clear enemies
+        enemies.forEach(e => scene.remove(e));
+        enemies.length = 0;
+        
+        // Reset player position
+        controls.getObject().position.set(0, config.playerHeight, 0);
+        velocity.set(0,0,0);
+
+        updateUI();
+        document.querySelector('#blocker h1').innerText = "WEBARENA";
+        spawnWave();
+    }
+
+    function updateUI() {
+        healthDisplay.innerText = Math.max(0, state.health);
+        ammoDisplay.innerText = state.ammo;
+        scoreDisplay.innerText = `FRAGS: ${state.frags}`;
+        waveDisplay.innerText = `WAVE: ${state.wave}`;
+    }
+
+    // --- Main Loop ---
+    function onWindowResize() {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+    }
+
+    function animate() {
+        requestAnimationFrame(animate);
+
+        const time = performance.now();
+        const delta = (time - prevTime) / 1000; // convert to seconds
+
+        if (controls.isLocked === true) {
+            // --- Player Physics & Movement ---
+            velocity.x -= velocity.x * 10.0 * delta; // Friction
+            velocity.z -= velocity.z * 10.0 * delta; // Friction
+            velocity.y -= config.gravity * delta; // Falling
+
+            direction.z = Number(moveForward) - Number(moveBackward);
+            direction.x = Number(moveRight) - Number(moveLeft);
+            direction.normalize();
+
+            // Apply acceleration
+            if (moveForward || moveBackward) velocity.z -= direction.z * config.playerSpeed * delta;
+            if (moveLeft || moveRight) velocity.x -= direction.x * config.playerSpeed * delta;
+
+            const camObj = controls.getObject();
+            
+            // 1. Vertical (Y) Movement & Collision
+            camObj.position.y += velocity.y * delta;
+            
+            let playerBox = new THREE.Box3().setFromCenterAndSize(
+                new THREE.Vector3(camObj.position.x, camObj.position.y, camObj.position.z),
+                new THREE.Vector3(5, config.playerHeight * 2, 5)
+            );
+
+            let onGround = false;
+
+            // Floor collision
+            if (camObj.position.y < config.playerHeight) {
+                velocity.y = 0;
+                camObj.position.y = config.playerHeight;
+                onGround = true;
+            }
+
+            // Platform Y collision
+            for (let i = 0; i < objects.length; i++) {
+                const wallBox = new THREE.Box3().setFromObject(objects[i]);
+                if (playerBox.intersectsBox(wallBox)) {
+                    if (velocity.y < 0) { // Falling onto a platform
+                        camObj.position.y = wallBox.max.y + config.playerHeight;
+                        velocity.y = 0;
+                        onGround = true;
+                    } else if (velocity.y > 0) { // Jumping into a ceiling
+                        camObj.position.y = wallBox.min.y - config.playerHeight;
+                        velocity.y = 0;
+                    }
+                }
+            }
+            
+            canJump = onGround;
+
+            // 2. Horizontal (Local X) Movement & Collision
+            const origX = camObj.position.x;
+            const origZ = camObj.position.z;
+            
+            controls.moveRight(-velocity.x * delta);
+            
+            playerBox.setFromCenterAndSize(
+                new THREE.Vector3(camObj.position.x, camObj.position.y, camObj.position.z),
+                new THREE.Vector3(5, config.playerHeight * 2, 5)
+            );
+            
+            for (let i = 0; i < objects.length; i++) {
+                const wallBox = new THREE.Box3().setFromObject(objects[i]);
+                if (playerBox.intersectsBox(wallBox)) {
+                    camObj.position.x = origX;
+                    camObj.position.z = origZ;
+                    velocity.x = 0;
+                    break;
+                }
+            }
+
+            // 3. Horizontal (Local Z) Movement & Collision
+            const afterX = camObj.position.x;
+            const afterZ = camObj.position.z;
+            
+            controls.moveForward(-velocity.z * delta);
+            
+            playerBox.setFromCenterAndSize(
+                new THREE.Vector3(camObj.position.x, camObj.position.y, camObj.position.z),
+                new THREE.Vector3(5, config.playerHeight * 2, 5)
+            );
+            
+            for (let i = 0; i < objects.length; i++) {
+                const wallBox = new THREE.Box3().setFromObject(objects[i]);
+                if (playerBox.intersectsBox(wallBox)) {
+                    camObj.position.x = afterX;
+                    camObj.position.z = afterZ;
+                    velocity.z = 0;
+                    break;
+                }
+            }
+
+            // --- Weapon Animation ---
+            // Bobbing effect when walking
+            if ((moveForward || moveBackward || moveLeft || moveRight) && canJump) {
+                const bobTime = time * 0.01;
+                weaponPivot.position.y = -1.5 + Math.sin(bobTime) * 0.1;
+                weaponPivot.position.x = 1.5 + Math.cos(bobTime) * 0.1;
+            } else {
+                weaponPivot.position.y = THREE.MathUtils.lerp(weaponPivot.position.y, -1.5, 0.1);
+                weaponPivot.position.x = THREE.MathUtils.lerp(weaponPivot.position.x, 1.5, 0.1);
+            }
+
+            // Recoil effect
+            if (isFiring) {
+                recoilTime += delta;
+                if (recoilTime < 0.05) {
+                    weaponPivot.rotation.x = THREE.MathUtils.lerp(weaponPivot.rotation.x, 0.2, 0.5);
+                    weaponPivot.position.z = THREE.MathUtils.lerp(weaponPivot.position.z, -2.5, 0.5);
+                } else if (recoilTime < 0.2) {
+                    weaponPivot.rotation.x = THREE.MathUtils.lerp(weaponPivot.rotation.x, 0, 0.2);
+                    weaponPivot.position.z = THREE.MathUtils.lerp(weaponPivot.position.z, -3, 0.2);
+                    muzzleFlash.material.opacity = 0; // hide flash rapidly
+                    muzzleFlash.children[0].material.opacity = 0;
+                } else {
+                    isFiring = false;
+                    weaponPivot.rotation.x = 0;
+                    weaponPivot.position.z = -3;
+                }
+            }
+
+            // --- Enemy AI & Logic ---
+            const playerPos = camObj.position;
+            enemies.forEach(enemy => {
+                // Bobbing animation
+                enemy.position.y = 15 + Math.sin(time * 0.005 + enemy.id) * 2;
+
+                // Look at player (only Y axis rotation to stay upright)
+                const targetPos = new THREE.Vector3(playerPos.x, enemy.position.y, playerPos.z);
+                enemy.lookAt(targetPos);
+
+                // Move towards player
+                const dist = enemy.position.distanceTo(playerPos);
+                if (dist > 15) {
+                    enemy.translateZ(config.enemySpeed * delta);
+                } else if (dist < 10 && Math.random() < 0.05) { // Attack randomly when close
+                    takeDamage(config.enemyDamage);
+                }
+            });
+
+            // --- Particle Physics ---
+            for (let i = particles.length - 1; i >= 0; i--) {
+                let p = particles[i];
+                p.position.addScaledVector(p.velocity, delta);
+                p.velocity.y -= config.gravity * delta * 0.5; // gravity on particles
+                
+                // shrink
+                p.scale.multiplyScalar(0.9);
+                p.life -= delta;
+
+                if (p.life <= 0) {
+                    scene.remove(p);
+                    particles.splice(i, 1);
+                }
+            }
+        }
+
+        renderer.render(scene, camera);
+        prevTime = time;
+    }
+};
+</script>
+</body>
+</html>
